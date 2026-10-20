@@ -4,17 +4,14 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "arch/arm64/**"
-      - "drivers/misc/mediatek/connectivity/**"
-      - ".github/workflows/build.yml"
-      - "Makefile"
+      - "**"
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Compile Android 11 Kernel
+    name: Build Android 11 Kernel
     runs-on: ubuntu-22.04
     timeout-minutes: 120
 
@@ -22,9 +19,12 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
+        shell: bash
         run: |
+          set -e
           sudo apt-get update
+
           sudo apt-get install -y \
             bc \
             bison \
@@ -33,13 +33,59 @@ jobs:
             gcc-aarch64-linux-gnu \
             libssl-dev \
             libelf-dev \
+            libexpat1-dev \
+            libffi-dev \
+            zlib1g-dev \
+            libbz2-dev \
+            libreadline-dev \
+            libsqlite3-dev \
             device-tree-compiler \
-            python3 \
+            curl \
+            ca-certificates \
             perl \
             rsync
 
-      - name: Configure kernel
+      - name: Build Python 2.7
+        shell: bash
         run: |
+          set -euo pipefail
+
+          cd "$RUNNER_TEMP"
+
+          curl -fL --retry 3 \
+            https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz \
+            -o Python-2.7.18.tgz
+
+          tar -xzf Python-2.7.18.tgz
+          cd Python-2.7.18
+
+          CFLAGS="-O2 -fno-strict-aliasing" \
+            ./configure \
+              --prefix="$RUNNER_TEMP/python2" \
+              --disable-shared \
+              --without-ensurepip
+
+          make -j2
+          make install
+
+          mkdir -p "$RUNNER_TEMP/python2-bin"
+
+          ln -sf \
+            "$RUNNER_TEMP/python2/bin/python2.7" \
+            "$RUNNER_TEMP/python2-bin/python2"
+
+          echo "$RUNNER_TEMP/python2-bin" >> "$GITHUB_PATH"
+
+          "$RUNNER_TEMP/python2-bin/python2" --version
+
+          "$RUNNER_TEMP/python2-bin/python2" -c \
+            'import sys, xml.dom.minidom, subprocess; print(sys.version)'
+
+      - name: Configure kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
           make O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -47,31 +93,45 @@ jobs:
 
           test -s out/.config
 
-          echo "Checking Wi-Fi configuration..."
+          echo "=== Wi-Fi configuration ==="
+
           grep -E \
             'CONFIG_(MTK_COMBO|MTK_COMBO_CHIP_CONSYS_6765|MTK_COMBO_WIFI|WLAN_DRV_BUILD_IN)=' \
             out/.config || true
 
-          echo "Checking source sniffer support..."
+          echo "=== Sniffer source support ==="
+
           grep -n 'CFG_SUPPORT_SNIFFER' \
             drivers/misc/mediatek/connectivity/wlan_drv_gen4m/include/config.h
 
-      - name: Build kernel and device trees
+      - name: Build kernel
+        shell: bash
         run: |
+          set -euo pipefail
+
+          export PATH="$RUNNER_TEMP/python2-bin:$PATH"
+
+          python2 --version
+
           make -j2 O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            Image.gz-dtb dtbs
+            Image.gz-dtb 2>&1 | tee build.log
 
           test -s out/arch/arm64/boot/Image.gz-dtb
 
-      - name: List build outputs
+          echo "Kernel image created successfully."
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Show generated device tree files
         if: always()
+        shell: bash
         run: |
           if [ -d out/arch/arm64/boot ]; then
-            find out/arch/arm64/boot -maxdepth 4 -type f \
-              \( -name 'Image*' -o -name '*.dtb' -o -name '*.dtbo' \) \
-              -printf '%p (%s bytes)\n' | sort
+            find out/arch/arm64/boot \
+              -type f \
+              \( -name '*.dtb' -o -name '*.dtbo' -o -name 'Image*' \) \
+              -printf '%p (%s bytes)\n' | sort || true
           fi
 
       - name: Upload kernel artifacts
@@ -86,3 +146,11 @@ jobs:
           if-no-files-found: error
           compression-level: 6
           retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KOB2-Build-Log
+          path: build.log
+          if-no-files
