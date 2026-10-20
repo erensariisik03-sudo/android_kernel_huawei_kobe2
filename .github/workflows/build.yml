@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Stok çekirdek Linaro GCC 6.3.1 (2017.02) ile derlenmiş (/proc/version).
+  # Aynı derleyiciyi kullanarak modern GCC'nin çıkardığı uyarı/hata
+  # sorunlarını baştan ortadan kaldırıyoruz.
+  CROSS: /opt/linaro/bin/aarch64-linux-gnu-
+
 jobs:
   build:
     name: Build Android 11 Kernel
@@ -25,13 +31,27 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential flex \
-            gcc-aarch64-linux-gnu \
+            bc bison build-essential flex xz-utils \
             libssl-dev libelf-dev libexpat1-dev \
             libffi-dev zlib1g-dev libbz2-dev \
             libreadline-dev libsqlite3-dev \
             device-tree-compiler curl ca-certificates \
             perl rsync
+
+      - name: Install Linaro GCC 6.3.1 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+
+          curl -fL --retry 5 --retry-delay 5 \
+            https://releases.linaro.org/components/toolchain/binaries/6.3-2017.02/aarch64-linux-gnu/gcc-linaro-6.3.1-2017.02-x86_64_aarch64-linux-gnu.tar.xz \
+            -o linaro.tar.xz
+
+          sudo mkdir -p /opt/linaro
+          sudo tar -xJf linaro.tar.xz -C /opt/linaro --strip-components=1
+
+          "${CROSS}gcc" --version | head -n 1
 
       - name: Build Python 2.7
         shell: bash
@@ -68,15 +88,19 @@ jobs:
           set -euo pipefail
 
           make O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE="$CROSS" \
             kobe2_defconfig
 
           test -s out/.config
 
-          echo "=== Wi-Fi configuration ==="
+          echo "=== Wi-Fi / connectivity configuration ==="
           grep -E \
-            'CONFIG_(MTK_COMBO|MTK_COMBO_CHIP_CONSYS_6765|MTK_COMBO_WIFI|WLAN_DRV_BUILD_IN)=' \
+            'CONFIG_(MTK_COMBO|WLAN|MTK_CONN|MTK_WIFI)[A-Z0-9_]*=' \
             out/.config || true
+
+          echo "=== HIF (bus) selection in connectivity Makefile ==="
+          grep -rn 'MTK_COMBO_WIFI_HIF' \
+            drivers/misc/mediatek/connectivity/Makefile || true
 
           echo "=== Sniffer source support ==="
           grep -n 'CFG_SUPPORT_SNIFFER' \
@@ -84,42 +108,16 @@ jobs:
 
       - name: Build kernel
         shell: bash
-        env:
-          # Eski 4.14 kaynağında modern GCC'nin hata saydığı uyarılar.
-          # Sadece "hata sayma" davranışını kapatır, kodu düzeltmez.
-          WARN_FLAGS: >-
-            -Wno-error=array-bounds
-            -Wno-error=stringop-overflow
-            -Wno-error=stringop-truncation
-            -Wno-error=sizeof-pointer-memaccess
-            -Wno-error=maybe-uninitialized
-            -Wno-error=format-truncation
-            -Wno-error=format-overflow
-            -Wno-error=restrict
-            -Wno-error=address-of-packed-member
-            -Wno-error=misleading-indentation
-            -Wno-error=unused-variable
-            -Wno-error=unused-function
-            -Wno-error=unused-but-set-variable
-            -Wno-error=implicit-fallthrough
-            -Wno-error=int-in-bool-context
-            -Wno-error=packed-not-aligned
-            -Wno-error=attribute-alias
-            -Wno-error=zero-length-bounds
-            -Wno-error=memset-elt-size
-            -Wno-error=parentheses
-            -Wno-error=cast-function-type
-            -Wno-error=enum-conversion
         run: |
           set -euo pipefail
           export PATH="$RUNNER_TEMP/python2-bin:$PATH"
 
           python2 --version
+          "${CROSS}gcc" --version | head -n 1
 
           # -k: ilk hatada durma, tüm hataları tek çalıştırmada topla
           make -k -j"$(nproc)" O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            KCFLAGS="$WARN_FLAGS" \
+            CROSS_COMPILE="$CROSS" \
             Image.gz-dtb 2>&1 | tee build.log
 
           test -s out/arch/arm64/boot/Image.gz-dtb
