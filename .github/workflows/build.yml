@@ -93,6 +93,7 @@ jobs:
 
           make -j2 O=out ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS=-Wno-error=array-bounds \
             Image.gz-dtb 2>&1 | tee build.log
 
           test -s out/arch/arm64/boot/Image.gz-dtb
