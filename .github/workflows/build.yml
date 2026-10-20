@@ -95,6 +95,22 @@ jobs:
 
           test -s out/.config
 
+          # KOB2-W09 yalnızca Wi-Fi'li model, modemi yok. Stok çekirdekte
+          # kapalı olan modem seçeneklerini bizde de kapatıyoruz.
+          ./scripts/config --file out/.config \
+            -d MTK_CONN_MD \
+            -d MTK_CONN_LTE_IDC_SUPPORT \
+            -d MTK_ECCCI_DRIVER \
+            -d MTK_NET_CCMNI
+
+          make O=out ARCH=arm64 \
+            CROSS_COMPILE="$CROSS" \
+            olddefconfig
+
+          echo "=== Modem seçenekleri (hepsi kapalı olmalı) ==="
+          grep -E 'CONFIG_(MTK_CONN_MD|MTK_CONN_LTE_IDC_SUPPORT|MTK_ECCCI[A-Z0-9_]*|MTK_NET_CCMNI|MTK_MD[0-9]_SUPPORT)[ =]' \
+            out/.config || true
+
           echo "=== Wi-Fi / connectivity configuration ==="
           grep -E \
             'CONFIG_(MTK_COMBO|WLAN|MTK_CONN|MTK_WIFI)[A-Z0-9_]*=' \
@@ -152,6 +168,7 @@ jobs:
             out/arch/arm64/boot/
             out/.config
             out/System.map
+          include-hidden-files: true
           if-no-files-found: error
           compression-level: 6
           retention-days: 7
