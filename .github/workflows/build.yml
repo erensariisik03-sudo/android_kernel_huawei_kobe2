@@ -1,4 +1,3 @@
-
 name: Build Huawei KOB2 Kernel
 
 on:
@@ -85,20 +84,54 @@ jobs:
 
       - name: Build kernel
         shell: bash
+        env:
+          # Eski 4.14 kaynağında modern GCC'nin hata saydığı uyarılar.
+          # Sadece "hata sayma" davranışını kapatır, kodu düzeltmez.
+          WARN_FLAGS: >-
+            -Wno-error=array-bounds
+            -Wno-error=stringop-overflow
+            -Wno-error=stringop-truncation
+            -Wno-error=sizeof-pointer-memaccess
+            -Wno-error=maybe-uninitialized
+            -Wno-error=format-truncation
+            -Wno-error=format-overflow
+            -Wno-error=restrict
+            -Wno-error=address-of-packed-member
+            -Wno-error=misleading-indentation
+            -Wno-error=unused-variable
+            -Wno-error=unused-function
+            -Wno-error=unused-but-set-variable
+            -Wno-error=implicit-fallthrough
+            -Wno-error=int-in-bool-context
+            -Wno-error=packed-not-aligned
+            -Wno-error=attribute-alias
+            -Wno-error=zero-length-bounds
+            -Wno-error=memset-elt-size
+            -Wno-error=parentheses
+            -Wno-error=cast-function-type
+            -Wno-error=enum-conversion
         run: |
           set -euo pipefail
           export PATH="$RUNNER_TEMP/python2-bin:$PATH"
 
           python2 --version
 
-          make -j2 O=out ARCH=arm64 \
+          # -k: ilk hatada durma, tüm hataları tek çalıştırmada topla
+          make -k -j"$(nproc)" O=out ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            KCFLAGS="-Wno-error=array-bounds -Wno-error=stringop-overflow" \
+            KCFLAGS="$WARN_FLAGS" \
             Image.gz-dtb 2>&1 | tee build.log
 
           test -s out/arch/arm64/boot/Image.gz-dtb
           echo "Kernel image created successfully."
           ls -lh out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Show first errors
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== Hata satırları (ilk 60) ==="
+          grep -nE 'error:|\*\*\* \[|Error [0-9]+' build.log | head -60 || true
 
       - name: Show build outputs
         if: always()
