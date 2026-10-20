@@ -1,0 +1,128 @@
+name: Build drvcmd (MTK driver command tool)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build static drvcmd
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Install cross compilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+
+      - name: Write source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > drvcmd.c << 'CEOF'
+          /*
+           * drvcmd: Android "driver command" ioctl (SIOCDEVPRIVATE+1) gonderir.
+           * wpa_supplicant'in "DRIVER <komut>" yolunun aynisidir.
+           * Kullanim: drvcmd wlan0 "MONITOR 1 149 0 0"
+           */
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <errno.h>
+          #include <unistd.h>
+          #include <sys/socket.h>
+          #include <sys/ioctl.h>
+          #include <net/if.h>
+          #include <linux/sockios.h>
+
+          struct android_wifi_priv_cmd {
+              char *buf;
+              int used_len;
+              int total_len;
+          };
+
+          int main(int argc, char **argv)
+          {
+              static const int sizes[] = { 512, 4096, 256 };
+              const char *ifname, *cmd;
+              int s, i;
+
+              if (argc < 3) {
+                  fprintf(stderr, "kullanim: %s <arayuz> \"KOMUT ...\"\n", argv[0]);
+                  return 2;
+              }
+              ifname = argv[1];
+              cmd = argv[2];
+              if (strlen(cmd) >= 250) {
+                  fprintf(stderr, "komut cok uzun\n");
+                  return 2;
+              }
+
+              s = socket(AF_INET, SOCK_DGRAM, 0);
+              if (s < 0) {
+                  perror("socket");
+                  return 1;
+              }
+
+              for (i = 0; i < (int)(sizeof(sizes) / sizeof(sizes[0])); i++) {
+                  int n = sizes[i], r, e;
+                  char *buf = calloc(1, n);
+                  struct android_wifi_priv_cmd pc;
+                  struct ifreq ifr;
+
+                  if (!buf) {
+                      perror("calloc");
+                      return 1;
+                  }
+                  strncpy(buf, cmd, n - 1);
+                  pc.buf = buf;
+                  pc.used_len = n;
+                  pc.total_len = n;
+
+                  memset(&ifr, 0, sizeof(ifr));
+                  strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+                  ifr.ifr_data = (char *)&pc;
+
+                  errno = 0;
+                  r = ioctl(s, SIOCDEVPRIVATE + 1, &ifr);
+                  e = errno;
+                  printf("[tampon %d] ioctl donus=%d errno=%d (%s)\n",
+                         n, r, e, e ? strerror(e) : "ok");
+                  if (buf[0] && strcmp(buf, cmd) != 0)
+                      printf("yanit: %s\n", buf);
+                  free(buf);
+
+                  if (r >= 0) {
+                      close(s);
+                      return 0;
+                  }
+                  if (e != EINVAL && e != EFAULT && e != E2BIG)
+                      break;
+              }
+              close(s);
+              return 1;
+          }
+          CEOF
+
+      - name: Compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          aarch64-linux-gnu-gcc -static -O2 -Wall -o dist/drvcmd-arm64 drvcmd.c
+          arm-linux-gnueabihf-gcc -static -O2 -Wall -o dist/drvcmd-arm32 drvcmd.c
+          file dist/* || true
+          ls -l dist
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: drvcmd-binaries
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
