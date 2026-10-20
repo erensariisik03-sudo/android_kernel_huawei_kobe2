@@ -1,0 +1,88 @@
+name: Build Huawei KOB2 Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "arch/arm64/**"
+      - "drivers/misc/mediatek/connectivity/**"
+      - ".github/workflows/build.yml"
+      - "Makefile"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile Android 11 Kernel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            flex \
+            gcc-aarch64-linux-gnu \
+            libssl-dev \
+            libelf-dev \
+            device-tree-compiler \
+            python3 \
+            perl \
+            rsync
+
+      - name: Configure kernel
+        run: |
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            kobe2_defconfig
+
+          test -s out/.config
+
+          echo "Checking Wi-Fi configuration..."
+          grep -E \
+            'CONFIG_(MTK_COMBO|MTK_COMBO_CHIP_CONSYS_6765|MTK_COMBO_WIFI|WLAN_DRV_BUILD_IN)=' \
+            out/.config || true
+
+          echo "Checking source sniffer support..."
+          grep -n 'CFG_SUPPORT_SNIFFER' \
+            drivers/misc/mediatek/connectivity/wlan_drv_gen4m/include/config.h
+
+      - name: Build kernel and device trees
+        run: |
+          make -j2 O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            Image.gz-dtb dtbs
+
+          test -s out/arch/arm64/boot/Image.gz-dtb
+
+      - name: List build outputs
+        if: always()
+        run: |
+          if [ -d out/arch/arm64/boot ]; then
+            find out/arch/arm64/boot -maxdepth 4 -type f \
+              \( -name 'Image*' -o -name '*.dtb' -o -name '*.dtbo' \) \
+              -printf '%p (%s bytes)\n' | sort
+          fi
+
+      - name: Upload kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KOB2-Kernel-Build
+          path: |
+            out/arch/arm64/boot/
+            out/.config
+            out/System.map
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 7
